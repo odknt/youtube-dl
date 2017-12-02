@@ -255,6 +255,7 @@ class NiconicoIE(InfoExtractor):
             }))
 
         resolution = video_quality.get('resolution', {})
+        session_id = session_response['data']['session']['id']
 
         return {
             'url': session_response['data']['session']['content_uri'],
@@ -264,6 +265,12 @@ class NiconicoIE(InfoExtractor):
             'vbr': float_or_none(video_quality.get('bitrate'), 1000),
             'height': resolution.get('height'),
             'width': resolution.get('width'),
+            'cors_url': 'http://api.dmc.nico:2805/api/sessions/{}?_format=json&_method=PUT'.format(session_id),
+            'cors_request_method': 'OPTIONS,POST',
+            'cors_request_header': 'content-type',
+            'cors_heartbeat_method': 'POST',
+            'cors_heartbeat_interval': 40,
+            'cors_session_data': json.dumps(session_response['data']['session']),
         }
 
     def _real_extract(self, url):

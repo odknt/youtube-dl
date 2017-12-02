@@ -1,13 +1,17 @@
 from __future__ import unicode_literals
 
 import errno
+import json
 import os
 import socket
 import time
 import re
 
 from .common import FileDownloader
-from ..compat import compat_urllib_error
+from ..compat import (
+    compat_urllib_error,
+    compat_urllib_request,
+)
 from ..utils import (
     ContentTooShortError,
     encodeFilename,
@@ -17,6 +21,11 @@ from ..utils import (
     XAttrMetadataError,
     XAttrUnavailableError,
 )
+
+try:
+    import threading as _threading
+except ImportError:
+    import dummy_threading as _threading
 
 
 class HttpFD(FileDownloader):
@@ -32,6 +41,10 @@ class HttpFD(FileDownloader):
         ctx.filename = filename
         ctx.tmpfilename = self.temp_name(filename)
         ctx.stream = None
+
+        # for CORS thread
+        cors_event = _threading.Event()
+        cors_session_data = None
 
         # Do not include the Accept-Encoding header
         headers = {'Youtubedl-no-compression': 'True'}
@@ -167,11 +180,33 @@ class HttpFD(FileDownloader):
             now = None  # needed for slow_down() in the first loop run
             before = start  # start measuring
 
+            # heartbeat
+            def cors_heartbeat(event, session):
+                while not event.wait(info_dict['cors_heartbeat_interval']):
+                    req = compat_urllib_request.Request(info_dict['cors_url'], method='POST', data=session.encode('utf-8'))
+                    with compat_urllib_request.urlopen(req) as res:
+                        data = json.loads(res.read())
+                        session = json.dumps({'session': data['data']['session']})
+
+            if 'cors_url' in info_dict:
+                cors_session_data = json.dumps({'session': json.loads(info_dict['cors_session_data'])})
+                cors_thread = _threading.Thread(target=cors_heartbeat, args=[cors_event, cors_session_data])
+                req = compat_urllib_request.Request(info_dict['cors_url'], method='OPTIONS')
+                req.add_header('Access-Control-Request-Method', info_dict['cors_request_method'])
+                req.add_header('Access-Control-Request-Headers', info_dict['cors_request_header'])
+                with compat_urllib_request.urlopen(req) as res:
+                    cors_thread.start()
+
             def retry(e):
                 if ctx.tmpfilename != '-':
                     ctx.stream.close()
                 ctx.stream = None
                 ctx.resume_len = os.path.getsize(encodeFilename(ctx.tmpfilename))
+
+                if 'cors_url' in info_dict:
+                    cors_event.set()
+                    cors_event.clear()
+
                 raise RetryDownload(e)
 
             while True:
@@ -191,6 +226,7 @@ class HttpFD(FileDownloader):
 
                 # exit loop when download is finished
                 if len(data_block) == 0:
+                    cors_event.set()
                     break
 
                 # Open destination file just in time
